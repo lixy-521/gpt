@@ -1,0 +1,60 @@
+\documentclass[UTF8,12pt,a4paper]{ctexart}
+\usepackage{geometry}
+\geometry{left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm}
+\usepackage{lmodern}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{bm}
+\usepackage{float}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{exscale}
+\usepackage{relsize}
+\usepackage{indentfirst}
+\usepackage{fancyhdr}
+\usepackage{xcolor}
+
+\usepackage{pgfplots}
+\pgfplotsset{height = 6cm,width = 10cm,compat=1.18}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
+\usepackage{listings}
+
+\newcommand{\relu}{\mathrm{ReLU}}
+
+% 减少字体警告
+\usepackage{silence}
+\WarningFilter{latexfont}{Font substitution}
+\WarningFilter{latexfont}{Size substitutions}
+
+% 设置段首缩进为2个中文字符宽度
+\setlength{\parindent}{2em}
+
+% 设置章节标题左对齐并使用汉字数字编号
+\ctexset{
+    section={
+        format={\Large\bfseries\raggedright},
+        number=\chinese{section},
+        name={,、},
+        aftername={}
+    }
+}
+
+% 设置页眉页脚
+\pagestyle{fancy}
+\fancyhf{}  % 清空所有页眉页脚
+\cfoot{\thepage}  % 页面底部居中显示页码
+\renewcommand{\headrulewidth}{0pt}  % 去掉页眉的横线
+\renewcommand{\footrulewidth}{0pt}  % 去掉页脚的横线
+
+\title{title}
+\author{author}
+\date{\today}
+\begin{document}
+\maketitle
+
+
+
+\end{document}
