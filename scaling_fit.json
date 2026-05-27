@@ -1,0 +1,5 @@
+{
+  "slope": 0.007451057381375236,
+  "intercept": 2.313111177814563,
+  "description": "log(PPL) = slope * log(params) + intercept"
+}

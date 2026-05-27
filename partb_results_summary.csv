@@ -1,0 +1,7 @@
+Model,Non-Embed Parameters,Best Valid PPL,Type
+tiny,3622928,231.17,baseline
+small,7398544,230.83,baseline
+base_small,11434256,233.67,baseline
+medium,26589712,230.66,baseline
+base,43838224,231.4,baseline
+large,78398480,239.46,baseline
