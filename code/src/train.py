@@ -1,4 +1,8 @@
 # coding: utf-8
+"""
+Part B: Scaling Laws and Architectural Study
+用于研究模型规模与性能的关系，以及架构变体的影响
+"""
 import argparse
 import math
 import torch
@@ -7,9 +11,11 @@ import torch.nn as nn
 import os
 import sys
 import json
+import csv
+import subprocess
 from datetime import datetime
+from itertools import product
 
-# 设置 matplotlib 后端，避免显示问题
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -19,413 +25,593 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import data
 import model
 
-# ------------------------------
-# 命令行参数（修改默认值）
-# ------------------------------
-parser = argparse.ArgumentParser(description='PyTorch ptb Language Model with Plotting')
-parser.add_argument('--epochs', type=int, default=20, help='upper epoch limit')
-parser.add_argument('--train_batch_size', type=int, default=16, metavar='N', help='batch size')
-parser.add_argument('--eval_batch_size', type=int, default=16, metavar='N', help='eval batch size')
-parser.add_argument('--max_sql', type=int, default=256, help='sequence length')
-parser.add_argument('--seed', type=int, default=1234, help='set random seed')
-parser.add_argument('--num_layers', type=int, default=6, help='number of transformer layers')
-parser.add_argument('--num_heads', type=int, default=8, help='number of attention heads')
-parser.add_argument('--emb_dim', type=int, default=256, help='embedding dimension')
-parser.add_argument('--dropout', type=float, default=0.1, help='dropout rate')
-parser.add_argument('--lr', type=float, default=5e-4, help='learning rate')
-parser.add_argument('--weight_decay', type=float, default=0.01, help='weight decay')
-parser.add_argument('--patience', type=int, default=3, help='early stopping patience')
-parser.add_argument('--grad_clip', type=float, default=0.5, help='gradient clipping')
-parser.add_argument('--label_smoothing', type=float, default=0.1, help='label smoothing')
-parser.add_argument('--cuda', action='store_true', default=True, help='use CUDA device')
-parser.add_argument('--gpu_id', type=int, default=0, help='GPU device id')
-# 架构变体开关
-parser.add_argument('--use_qk_norm', action='store_true', help='use QK Norm')
-parser.add_argument('--use_attn_gate', action='store_true', help='use Attention Gate')
-parser.add_argument('--use_value_embed', action='store_true', help='use Value Embedding')
-# 数据路径
-parser.add_argument('--data_path', type=str, default='../data/ptb', help='data directory')
-# 检查点
-parser.add_argument('--save_dir', type=str, default='./checkpoints', help='save directory')
-parser.add_argument('--save_best', action='store_true', default=True)
-parser.add_argument('--save_every_epoch', action='store_true', default=True)
-parser.add_argument('--load_checkpoint', type=str, default=None)
-# 绘图
-parser.add_argument('--plot_dir', type=str, default='./plots', help='directory to save plots')
-# 调度器类型
-parser.add_argument('--scheduler', type=str, default='cosine', 
-                    choices=['cosine', 'plateau', 'step', 'none'], help='scheduler type')
 
-args = parser.parse_args()
-
-# 确保 emb_dim 可以被 num_heads 整除
-assert args.emb_dim % args.num_heads == 0, "emb_dim must be divisible by num_heads"
-
-# 创建目录
-os.makedirs(args.save_dir, exist_ok=True)
-os.makedirs(args.plot_dir, exist_ok=True)
-
-# 设置设备
-if args.cuda and torch.cuda.is_available():
-    torch.cuda.set_device(args.gpu_id)
-    device = torch.device('cuda:{}'.format(args.gpu_id))
-    print("Using GPU: {}".format(torch.cuda.get_device_name(0)))
-else:
-    device = torch.device('cpu')
-    print("Using CPU")
-
-torch.manual_seed(args.seed)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(args.seed)
-
-# ---------- 加载数据 ----------
-script_dir = os.path.dirname(os.path.abspath(__file__))
-if os.path.isabs(args.data_path):
-    data_path = args.data_path
-else:
-    data_path = os.path.join(script_dir, args.data_path)
-data_path = os.path.normpath(data_path)
-
-print("Looking for data at: {}".format(data_path))
-batch_size = {'train': args.train_batch_size, 'valid': args.eval_batch_size}
-data_loader = data.Corpus(data_path, batch_size, args.max_sql)
-
-vocab_size = len(data_loader.vocabulary)
-print("Vocabulary size: {}".format(vocab_size))
-
-# ---------- 构建模型 ----------
-print("\nBuilding model with config:")
-print("  num_layers: {}".format(args.num_layers))
-print("  num_heads: {}".format(args.num_heads))
-print("  emb_dim: {}".format(args.emb_dim))
-print("  dropout: {}".format(args.dropout))
-
-lm_model = model.CausalLMM(
-    vocab_size=vocab_size,
-    dim=args.emb_dim,
-    num_layers=args.num_layers,
-    num_heads=args.num_heads,
-    dropout=args.dropout,
-    use_qk_norm=args.use_qk_norm,
-    use_attn_gate=args.use_attn_gate,
-    use_value_embed=args.use_value_embed
-)
-lm_model = lm_model.to(device)
-
-total_params = sum(p.numel() for p in lm_model.parameters())
-non_embed_params = sum(p.numel() for p in lm_model.parameters() 
-                       if 'embedding' not in p.__repr__().lower())
-print("Total parameters: {:,}".format(total_params))
-print("Non-embedding parameters: {:,}".format(non_embed_params))
-
-# ---------- 优化器和调度器 ----------
-optimizer = optim.AdamW(lm_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
-
-# 学习率调度器
-if args.scheduler == 'cosine':
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    print("Using CosineAnnealingLR scheduler")
-elif args.scheduler == 'plateau':
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=2, verbose=True
+def get_model_params(vocab_size, num_layers, num_heads, emb_dim, dropout=0.1,
+                     use_qk_norm=False, use_attn_gate=False, use_value_embed=False):
+    """计算模型的参数量"""
+    lm_model = model.CausalLMM(
+        vocab_size=vocab_size,
+        dim=emb_dim,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        dropout=dropout,
+        use_qk_norm=use_qk_norm,
+        use_attn_gate=use_attn_gate,
+        use_value_embed=use_value_embed
     )
-    print("Using ReduceLROnPlateau scheduler")
-elif args.scheduler == 'step':
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
-    print("Using StepLR scheduler")
-else:
-    scheduler = None
-    print("No learning rate scheduler")
+    total_params = sum(p.numel() for p in lm_model.parameters())
+    non_embed_params = sum(p.numel() for p in lm_model.parameters() 
+                           if 'embedding' not in p.__repr__().lower())
+    return total_params, non_embed_params
 
-# ---------- 恢复训练（如果需要） ----------
-best_valid_ppl = float('inf')
-best_valid_loss = float('inf')
-start_epoch = 1
-train_losses = []
-valid_losses = []
-train_ppls = []
-valid_ppls = []
-patience_counter = 0
 
-if args.load_checkpoint:
-    print("Loading checkpoint from {}".format(args.load_checkpoint))
-    checkpoint = torch.load(args.load_checkpoint, map_location=device)
-    state_dict = {k: v for k, v in checkpoint['model_state_dict'].items()
-                  if 'rope.cos_cached' not in k and 'rope.sin_cached' not in k}
-    lm_model.load_state_dict(state_dict, strict=False)
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    start_epoch = checkpoint['epoch'] + 1
-    best_valid_ppl = checkpoint.get('best_valid_ppl', float('inf'))
-    best_valid_loss = checkpoint.get('best_valid_loss', float('inf'))
-    train_losses = checkpoint.get('train_losses', [])
-    valid_losses = checkpoint.get('valid_losses', [])
-    train_ppls = checkpoint.get('train_ppls', [])
-    valid_ppls = checkpoint.get('valid_ppls', [])
-    patience_counter = checkpoint.get('patience_counter', 0)
-    print("Resumed from epoch {}, best valid ppl: {:.2f}".format(start_epoch, best_valid_ppl))
-
-# ---------- 辅助函数 ----------
-def save_checkpoint(epoch, is_best=False):
-    checkpoint = {
-        'epoch': epoch,
-        'model_state_dict': lm_model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'best_valid_ppl': best_valid_ppl,
-        'best_valid_loss': best_valid_loss,
-        'train_losses': train_losses,
-        'valid_losses': valid_losses,
-        'train_ppls': train_ppls,
-        'valid_ppls': valid_ppls,
-        'patience_counter': patience_counter,
-        'args': vars(args),
-    }
-    if args.save_every_epoch:
-        epoch_path = os.path.join(args.save_dir, 'checkpoint_epoch_{}.pt'.format(epoch))
-        torch.save(checkpoint, epoch_path)
-        print("Saved checkpoint to {}".format(epoch_path))
-    if args.save_best and is_best:
-        best_path = os.path.join(args.save_dir, 'best_model.pt')
-        torch.save(checkpoint, best_path)
-        print("Saved best model to {} (valid ppl: {:.2f})".format(best_path, best_valid_ppl))
-
-def save_config():
-    config = vars(args)
-    config['vocab_size'] = vocab_size
-    config['total_params'] = total_params
-    config['non_embed_params'] = non_embed_params
-    config['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(os.path.join(args.save_dir, 'config.json'), 'w') as f:
-        json.dump(config, f, indent=2)
-    print("Saved config to {}".format(os.path.join(args.save_dir, 'config.json')))
-
-def evaluate():
-    data_loader.set_valid()
-    lm_model.eval()
-    total_loss = 0.0
-    steps = 0
-    with torch.no_grad():
+def train_single_config(config, data_loader, device, save_dir):
+    """
+    训练单个配置的模型
+    返回: best_valid_ppl, non_embed_params
+    """
+    vocab_size = len(data_loader.vocabulary)
+    
+    print("\n" + "="*70)
+    print(f"Training config: {config['name']}")
+    print(f"  layers={config['num_layers']}, heads={config['num_heads']}, "
+          f"dim={config['emb_dim']}, dropout={config.get('dropout', 0.1)}")
+    if config.get('use_qk_norm'):
+        print("  + QK Norm")
+    if config.get('use_attn_gate'):
+        print("  + Attention Gate")
+    if config.get('use_value_embed'):
+        print("  + Value Embedding")
+    print("="*70)
+    
+    # 创建模型
+    lm_model = model.CausalLMM(
+        vocab_size=vocab_size,
+        dim=config['emb_dim'],
+        num_layers=config['num_layers'],
+        num_heads=config['num_heads'],
+        dropout=config.get('dropout', 0.1),
+        use_qk_norm=config.get('use_qk_norm', False),
+        use_attn_gate=config.get('use_attn_gate', False),
+        use_value_embed=config.get('use_value_embed', False)
+    )
+    lm_model = lm_model.to(device)
+    
+    total_params, non_embed_params = get_model_params(
+        vocab_size, config['num_layers'], config['num_heads'],
+        config['emb_dim'], config.get('dropout', 0.1),
+        config.get('use_qk_norm', False),
+        config.get('use_attn_gate', False),
+        config.get('use_value_embed', False)
+    )
+    
+    print(f"Non-embedding parameters: {non_embed_params:,}")
+    
+    # 优化器
+    optimizer = optim.AdamW(lm_model.parameters(), 
+                            lr=config.get('lr', 3e-4), 
+                            weight_decay=config.get('weight_decay', 0.01))
+    criterion = nn.CrossEntropyLoss(label_smoothing=config.get('label_smoothing', 0.1))
+    
+    # 调度器
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.get('epochs', 15))
+    
+    best_valid_ppl = float('inf')
+    patience_counter = 0
+    patience = config.get('patience', 5)
+    
+    train_losses = []
+    valid_losses = []
+    train_ppls = []
+    valid_ppls = []
+    
+    def evaluate():
+        data_loader.set_valid()
+        lm_model.eval()
+        total_loss = 0.0
+        steps = 0
+        with torch.no_grad():
+            while True:
+                data_batch, target_batch, end_flag = data_loader.get_batch()
+                data_batch, target_batch = data_batch.to(device), target_batch.to(device)
+                logits = lm_model(data_batch)
+                loss = criterion(logits.reshape(-1, logits.size(-1)), target_batch)
+                total_loss += loss.item()
+                steps += 1
+                if end_flag:
+                    break
+        return total_loss / steps, math.exp(total_loss / steps)
+    
+    def train_one_epoch():
+        data_loader.set_train()
+        lm_model.train()
+        total_loss = 0.0
+        steps = 0
         while True:
-            data, target, end_flag = data_loader.get_batch()
-            data, target = data.to(device), target.to(device)
-            logits = lm_model(data)
-            loss = criterion(logits.reshape(-1, logits.size(-1)), target)
+            data_batch, target_batch, end_flag = data_loader.get_batch()
+            data_batch, target_batch = data_batch.to(device), target_batch.to(device)
+            optimizer.zero_grad()
+            logits = lm_model(data_batch)
+            loss = criterion(logits.reshape(-1, logits.size(-1)), target_batch)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(lm_model.parameters(), config.get('grad_clip', 0.5))
+            optimizer.step()
             total_loss += loss.item()
             steps += 1
             if end_flag:
                 break
-    avg_loss = total_loss / steps
-    return avg_loss, math.exp(avg_loss)
-
-def train_one_epoch():
-    data_loader.set_train()
-    lm_model.train()
-    total_loss = 0.0
-    steps = 0
+        return total_loss / steps, math.exp(total_loss / steps)
     
-    epoch_start_time = datetime.now()
-    
-    while True:
-        data, target, end_flag = data_loader.get_batch()
-        data, target = data.to(device), target.to(device)
+    # 训练循环
+    for epoch in range(config.get('epochs', 15)):
+        train_loss, train_ppl = train_one_epoch()
+        valid_loss, valid_ppl = evaluate()
         
-        optimizer.zero_grad()
-        logits = lm_model(data)
-        loss = criterion(logits.reshape(-1, logits.size(-1)), target)
-        loss.backward()
+        train_losses.append(train_loss)
+        valid_losses.append(valid_loss)
+        train_ppls.append(train_ppl)
+        valid_ppls.append(valid_ppl)
         
-        # 梯度裁剪
-        torch.nn.utils.clip_grad_norm_(lm_model.parameters(), args.grad_clip)
-        optimizer.step()
+        scheduler.step()
         
-        total_loss += loss.item()
-        steps += 1
+        print(f"Epoch {epoch+1}: Train PPL={train_ppl:.2f}, Valid PPL={valid_ppl:.2f}")
         
-        if steps % 10 == 0:
-            print("  Step {}, loss: {:.4f}".format(steps, loss.item()))
-        
-        if end_flag:
-            break
+        if valid_ppl < best_valid_ppl:
+            best_valid_ppl = valid_ppl
+            patience_counter = 0
+            print(f"  New best! Valid PPL={best_valid_ppl:.2f}")
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"Early stopping at epoch {epoch+1}")
+                break
     
-    avg_loss = total_loss / steps
-    epoch_time = (datetime.now() - epoch_start_time).seconds
-    print("  Epoch time: {} seconds".format(epoch_time))
-    
-    return avg_loss, math.exp(avg_loss)
-
-def plot_curves():
-    """绘制训练/验证损失和困惑度曲线"""
-    epochs = range(1, len(train_losses) + 1)
-    
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    
-    # 损失曲线
-    axes[0, 0].plot(epochs, train_losses, 'b-o', label='Training Loss', linewidth=2, markersize=6)
-    axes[0, 0].plot(epochs, valid_losses, 'r-s', label='Validation Loss', linewidth=2, markersize=6)
-    axes[0, 0].set_xlabel('Epoch')
-    axes[0, 0].set_ylabel('Cross-Entropy Loss')
-    axes[0, 0].set_title('Training and Validation Loss')
-    axes[0, 0].legend()
-    axes[0, 0].grid(True, alpha=0.3)
-    
-    # 困惑度曲线（对数坐标）
-    axes[0, 1].semilogy(epochs, train_ppls, 'b-o', label='Training Perplexity', linewidth=2, markersize=6)
-    axes[0, 1].semilogy(epochs, valid_ppls, 'r-s', label='Validation Perplexity', linewidth=2, markersize=6)
-    axes[0, 1].set_xlabel('Epoch')
-    axes[0, 1].set_ylabel('Perplexity (log scale)')
-    axes[0, 1].set_title('Training and Validation Perplexity')
-    axes[0, 1].legend()
-    axes[0, 1].grid(True, alpha=0.3)
-    
-    # 标记最佳点
-    best_idx = np.argmin(valid_ppls)
-    axes[0, 1].plot(best_idx + 1, valid_ppls[best_idx], 'g*', markersize=15, 
-                    label='Best PPL={:.2f}'.format(valid_ppls[best_idx]))
-    axes[0, 1].legend()
-    
-    # 损失下降率
-    train_loss_reduction = [(train_losses[0] - loss) / train_losses[0] * 100 for loss in train_losses]
-    valid_loss_reduction = [(valid_losses[0] - loss) / valid_losses[0] * 100 for loss in valid_losses]
-    axes[1, 0].plot(epochs, train_loss_reduction, 'b-o', label='Training Loss Reduction', linewidth=2)
-    axes[1, 0].plot(epochs, valid_loss_reduction, 'r-s', label='Validation Loss Reduction', linewidth=2)
-    axes[1, 0].set_xlabel('Epoch')
-    axes[1, 0].set_ylabel('Loss Reduction (%)')
-    axes[1, 0].set_title('Loss Reduction Over Time')
-    axes[1, 0].legend()
-    axes[1, 0].grid(True, alpha=0.3)
-    
-    # 学习率曲线
-    axes[1, 1].plot(epochs, [args.lr] * len(epochs), 'g--', label='Initial LR={}'.format(args.lr), linewidth=2)
-    axes[1, 1].set_xlabel('Epoch')
-    axes[1, 1].set_ylabel('Learning Rate')
-    axes[1, 1].set_title('Learning Rate Schedule')
-    axes[1, 1].legend()
-    axes[1, 1].grid(True, alpha=0.3)
-    axes[1, 1].set_yscale('log')
-    
-    plt.tight_layout()
-    plot_path = os.path.join(args.plot_dir, 'training_curves.png')
-    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print("Plots saved to {}".format(plot_path))
-
-def save_results():
-    results = {
+    # 保存结果
+    result = {
+        'name': config['name'],
+        'num_layers': config['num_layers'],
+        'num_heads': config['num_heads'],
+        'emb_dim': config['emb_dim'],
+        'non_embed_params': non_embed_params,
+        'best_valid_ppl': best_valid_ppl,
         'train_losses': train_losses,
         'valid_losses': valid_losses,
         'train_ppls': train_ppls,
         'valid_ppls': valid_ppls,
-        'best_valid_ppl': best_valid_ppl,
-        'best_valid_loss': best_valid_loss,
-        'final_train_ppl': train_ppls[-1] if train_ppls else None,
-        'final_valid_ppl': valid_ppls[-1] if valid_ppls else None,
-        'args': vars(args),
+        'config': config
     }
-    with open(os.path.join(args.save_dir, 'results.json'), 'w') as f:
-        json.dump(results, f, indent=2)
-    print("Saved results to {}".format(os.path.join(args.save_dir, 'results.json')))
+    
+    return result
 
-def print_training_summary():
-    """打印训练总结"""
-    print("\n" + "="*60)
-    print("TRAINING SUMMARY")
-    print("="*60)
-    print("Model config: {} layers, {} heads, {} dim".format(
-        args.num_layers, args.num_heads, args.emb_dim))
-    print("Total parameters: {:,}".format(total_params))
-    print("Non-embedding parameters: {:,}".format(non_embed_params))
-    print("Best validation perplexity: {:.2f}".format(best_valid_ppl))
-    if best_valid_ppl in valid_ppls:
-        best_epoch = valid_ppls.index(best_valid_ppl) + 1
-        print("  (Epoch {})".format(best_epoch))
-    print("Final validation perplexity: {:.2f}".format(valid_ppls[-1]))
-    print("Best validation loss: {:.4f}".format(best_valid_loss))
-    print("Final validation loss: {:.4f}".format(valid_losses[-1]))
-    
-    # 过拟合程度
-    overfitting_ratio = valid_ppls[-1] / train_ppls[-1]
-    print("Overfitting ratio (valid/train PPL): {:.2f}".format(overfitting_ratio))
-    if overfitting_ratio > 2.0:
-        print("  Warning: Model may be overfitting. Consider increasing dropout or weight decay.")
-    
-    # 收敛情况
-    if len(valid_losses) > 1:
-        loss_improvement = (valid_losses[0] - valid_losses[-1]) / valid_losses[0] * 100
-        print("Validation loss improvement: {:.1f}%".format(loss_improvement))
-    
-    print("Checkpoints saved to: {}".format(args.save_dir))
-    print("Plots saved to: {}".format(args.plot_dir))
-    print("="*60)
 
-# ---------- 训练循环 ----------
-save_config()
-print("\n=== Starting Training ===")
-print("Training for {} epochs, patience={}".format(args.epochs, args.patience))
-print("Learning rate: {}, Weight decay: {}".format(args.lr, args.weight_decay))
+def plot_scaling_laws(results, save_dir):
+    """
+    绘制 Scaling Laws 图
+    1. Loss vs Non-Embedding Parameters (log-log)
+    2. 架构变体对比图
+    """
+    # 分离 baseline 和变体
+    baselines = [r for r in results if not (r['config'].get('use_qk_norm') or 
+                                             r['config'].get('use_attn_gate') or 
+                                             r['config'].get('use_value_embed'))]
+    variants = [r for r in results if (r['config'].get('use_qk_norm') or 
+                                        r['config'].get('use_attn_gate') or 
+                                        r['config'].get('use_value_embed'))]
+    
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    
+    # 图1: Loss vs Non-Embedding Parameters (log-log)
+    ax1 = axes[0]
+    params = [r['non_embed_params'] for r in baselines]
+    losses = [math.log(r['best_valid_ppl']) for r in baselines]  # log PPL as loss proxy
+    
+    ax1.loglog(params, losses, 'bo-', markersize=8, linewidth=2, label='Baseline')
+    
+    # 添加线性拟合
+    log_params = np.log10(params)
+    log_losses = np.log10([r['best_valid_ppl'] for r in baselines])
+    coeffs = np.polyfit(log_params, log_losses, 1)
+    poly = np.poly1d(coeffs)
+    fitted_losses = 10**poly(log_params)
+    ax1.loglog(params, fitted_losses, 'r--', linewidth=2, 
+               label=f'Linear fit: slope={coeffs[0]:.2f}')
+    
+    ax1.set_xlabel('Non-Embedding Parameters')
+    ax1.set_ylabel('Validation Perplexity')
+    ax1.set_title('Scaling Law: Performance vs Model Size')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
+    
+    # 图2: 架构变体对比
+    ax2 = axes[1]
+    
+    # 按参数数量排序
+    all_results = sorted(results, key=lambda x: x['non_embed_params'])
+    
+    # 定义颜色和标记
+    styles = {
+        'baseline': {'color': 'blue', 'marker': 'o', 'linestyle': '-'},
+        'qk_norm': {'color': 'green', 'marker': 's', 'linestyle': '--'},
+        'attn_gate': {'color': 'red', 'marker': '^', 'linestyle': '--'},
+        'value_embed': {'color': 'purple', 'marker': 'd', 'linestyle': '--'}
+    }
+    
+    # 分组绘制
+    baseline_params = []
+    baseline_ppls = []
+    qk_params = []
+    qk_ppls = []
+    gate_params = []
+    gate_ppls = []
+    ve_params = []
+    ve_ppls = []
+    
+    for r in all_results:
+        params_val = r['non_embed_params']
+        ppl_val = r['best_valid_ppl']
+        
+        if r['config'].get('use_qk_norm'):
+            qk_params.append(params_val)
+            qk_ppls.append(ppl_val)
+        elif r['config'].get('use_attn_gate'):
+            gate_params.append(params_val)
+            gate_ppls.append(ppl_val)
+        elif r['config'].get('use_value_embed'):
+            ve_params.append(params_val)
+            ve_ppls.append(ppl_val)
+        else:
+            baseline_params.append(params_val)
+            baseline_ppls.append(ppl_val)
+    
+    if baseline_params:
+        ax2.plot(baseline_params, baseline_ppls, 'bo-', linewidth=2, 
+                markersize=8, label='Baseline')
+    if qk_params:
+        ax2.plot(qk_params, qk_ppls, 'gs--', linewidth=2, 
+                markersize=8, label='QK Norm')
+    if gate_params:
+        ax2.plot(gate_params, gate_ppls, 'r^--', linewidth=2, 
+                markersize=8, label='Attention Gate')
+    if ve_params:
+        ax2.plot(ve_params, ve_ppls, 'pd--', linewidth=2, 
+                markersize=8, label='Value Embedding')
+    
+    ax2.set_xscale('log')
+    ax2.set_yscale('log')
+    ax2.set_xlabel('Non-Embedding Parameters')
+    ax2.set_ylabel('Validation Perplexity')
+    ax2.set_title('Architectural Variants Comparison')
+    ax2.grid(True, alpha=0.3)
+    ax2.legend()
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, 'scaling_laws.png'), dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Scaling laws plot saved to {save_dir}/scaling_laws.png")
+    
+    # 保存拟合系数
+    with open(os.path.join(save_dir, 'scaling_fit.json'), 'w') as f:
+        json.dump({
+            'slope': coeffs[0],
+            'intercept': coeffs[1],
+            'r_squared': None  # 可计算
+        }, f, indent=2)
 
-for epoch in range(start_epoch, args.epochs + 1):
-    print("\n=== Epoch {}/{} ===".format(epoch, args.epochs))
+
+def run_positional_analysis(best_model_path, data_loader, device, save_dir):
+    """
+    研究位置对损失的影响（Context Length Effect）
+    """
+    print("\n" + "="*70)
+    print("Positional Analysis: Loss vs Token Position")
+    print("="*70)
     
-    # 训练一个epoch
-    train_loss, train_ppl = train_one_epoch()
+    # 加载最佳模型
+    checkpoint = torch.load(best_model_path, map_location=device)
     
-    # 验证
-    valid_loss, valid_ppl = evaluate()
+    # 需要知道模型配置来重建
+    # 这里假设从 checkpoint 中获取
+    config = checkpoint.get('args', {})
     
-    # 记录
-    train_losses.append(train_loss)
-    valid_losses.append(valid_loss)
-    train_ppls.append(train_ppl)
-    valid_ppls.append(valid_ppl)
+    lm_model = model.CausalLMM(
+        vocab_size=len(data_loader.vocabulary),
+        dim=config.get('emb_dim', 384),
+        num_layers=config.get('num_layers', 8),
+        num_heads=config.get('num_heads', 24),
+        dropout=0.1,
+        use_qk_norm=config.get('use_qk_norm', False),
+        use_attn_gate=config.get('use_attn_gate', False),
+        use_value_embed=config.get('use_value_embed', False)
+    )
+    lm_model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+    lm_model = lm_model.to(device)
+    lm_model.eval()
     
-    # 当前学习率
-    current_lr = optimizer.param_groups[0]['lr']
+    criterion = nn.CrossEntropyLoss(reduction='none')  # 不聚合，保留每个位置的损失
     
-    print("Train Loss: {:.4f}, Train PPL: {:.2f}".format(train_loss, train_ppl))
-    print("Valid Loss: {:.4f}, Valid PPL: {:.2f}".format(valid_loss, valid_ppl))
-    print("Learning Rate: {:.6f}".format(current_lr))
+    # 收集每个位置的损失
+    position_losses = {}  # pos -> list of losses
+    position_counts = {}  # pos -> count
     
-    # 更新学习率调度器
-    if args.scheduler == 'plateau':
-        scheduler.step(valid_loss)
-    elif scheduler is not None:
-        scheduler.step()
+    data_loader.set_valid()
     
-    # 检查是否为最佳模型
-    is_best = valid_ppl < best_valid_ppl
-    if is_best:
-        best_valid_ppl = valid_ppl
-        best_valid_loss = valid_loss
-        patience_counter = 0
-        print("  New best model! Valid PPL: {:.2f}".format(best_valid_ppl))
+    with torch.no_grad():
+        while True:
+            data_batch, target_batch, end_flag = data_loader.get_batch()
+            data_batch = data_batch.to(device)
+            target_batch = target_batch.to(device)
+            
+            logits = lm_model(data_batch)  # [seq_len, batch_size, vocab_size]
+            
+            # 计算每个位置的损失
+            loss_per_token = criterion(
+                logits.reshape(-1, logits.size(-1)), 
+                target_batch.reshape(-1)
+            ).reshape(logits.shape[0], logits.shape[1])  # [seq_len, batch_size]
+            
+            # 按位置记录
+            for pos in range(loss_per_token.shape[0]):
+                for batch_idx in range(loss_per_token.shape[1]):
+                    token_loss = loss_per_token[pos, batch_idx].item()
+                    if token_loss > 0:  # 忽略 padding 或其他无效值
+                        if pos not in position_losses:
+                            position_losses[pos] = []
+                        position_losses[pos].append(token_loss)
+            
+            if end_flag:
+                break
+    
+    # 计算每个位置的平均损失
+    positions = sorted(position_losses.keys())
+    avg_losses = [np.mean(position_losses[p]) for p in positions]
+    
+    # 分组（每 32 个位置一组）
+    group_size = 32
+    grouped_positions = []
+    grouped_losses = []
+    
+    for i in range(0, max(positions), group_size):
+        group_positions = [p for p in positions if i <= p < i + group_size]
+        if group_positions:
+            group_avg = np.mean([avg_losses[positions.index(p)] for p in group_positions])
+            grouped_positions.append(f"{i}-{i+group_size-1}")
+            grouped_losses.append(group_avg)
+    
+    # 绘图
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    
+    # 详细位置损失
+    ax1 = axes[0]
+    ax1.plot(positions, avg_losses, 'b-', alpha=0.7, linewidth=1)
+    ax1.set_xlabel('Token Position')
+    ax1.set_ylabel('Average Loss')
+    ax1.set_title('Loss vs Token Position (Detailed)')
+    ax1.grid(True, alpha=0.3)
+    
+    # 分组损失
+    ax2 = axes[1]
+    ax2.bar(range(len(grouped_positions)), grouped_losses, color='steelblue', alpha=0.7)
+    ax2.set_xticks(range(len(grouped_positions)))
+    ax2.set_xticklabels(grouped_positions, rotation=45, ha='right')
+    ax2.set_xlabel('Position Group')
+    ax2.set_ylabel('Average Loss')
+    ax2.set_title('Loss vs Token Position (Grouped by 32)')
+    ax2.grid(True, alpha=0.3, axis='y')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, 'positional_analysis.png'), dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    # 保存结果
+    pos_results = {
+        'positions': positions,
+        'avg_losses': avg_losses,
+        'grouped_positions': grouped_positions,
+        'grouped_losses': grouped_losses
+    }
+    with open(os.path.join(save_dir, 'positional_results.json'), 'w') as f:
+        json.dump(pos_results, f, indent=2)
+    
+    print(f"Positional analysis saved to {save_dir}/positional_analysis.png")
+    
+    return pos_results
+
+
+def save_all_results(results, save_dir):
+    """保存所有实验结果到 CSV"""
+    csv_path = os.path.join(save_dir, 'partb_all_results.csv')
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Config Name', 'Layers', 'Heads', 'Dim', 'Non-Embed Params', 
+                        'Best Valid PPL', 'QK Norm', 'Attn Gate', 'Value Embed'])
+        for r in results:
+            writer.writerow([
+                r['name'],
+                r['num_layers'],
+                r['num_heads'],
+                r['emb_dim'],
+                r['non_embed_params'],
+                f"{r['best_valid_ppl']:.2f}",
+                r['config'].get('use_qk_norm', False),
+                r['config'].get('use_attn_gate', False),
+                r['config'].get('use_value_embed', False)
+            ])
+    print(f"All results saved to {csv_path}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Part B: Scaling Laws and Architectural Study')
+    parser.add_argument('--data_path', type=str, default='../data/ptb')
+    parser.add_argument('--max_sql', type=int, default=256)
+    parser.add_argument('--train_batch_size', type=int, default=16)
+    parser.add_argument('--eval_batch_size', type=int, default=16)
+    parser.add_argument('--seed', type=int, default=1234)
+    parser.add_argument('--cuda', action='store_true', default=True)
+    parser.add_argument('--gpu_id', type=int, default=0)
+    parser.add_argument('--save_dir', type=str, default='./partb_results')
+    parser.add_argument('--skip_training', action='store_true', 
+                        help='Skip training, only plot from existing results')
+    parser.add_argument('--best_model_path', type=str, default='./checkpoints/best_model.pt',
+                        help='Path to best model for positional analysis')
+    args = parser.parse_args()
+    
+    os.makedirs(args.save_dir, exist_ok=True)
+    
+    # 设置设备
+    if args.cuda and torch.cuda.is_available():
+        torch.cuda.set_device(args.gpu_id)
+        device = torch.device(f'cuda:{args.gpu_id}')
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
     else:
-        patience_counter += 1
-        print("  No improvement for {} epoch(s)".format(patience_counter))
+        device = torch.device('cpu')
+        print("Using CPU")
     
-    # 保存检查点
-    save_checkpoint(epoch, is_best)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
     
-    # 早停检查
-    if patience_counter >= args.patience:
-        print("\nEarly stopping triggered after epoch {}".format(epoch))
-        print("Best validation perplexity: {:.2f}".format(best_valid_ppl))
-        break
+    # 加载数据
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    if os.path.isabs(args.data_path):
+        data_path = args.data_path
+    else:
+        data_path = os.path.join(script_dir, args.data_path)
+    data_path = os.path.normpath(data_path)
+    
+    print(f"Looking for data at: {data_path}")
+    batch_size = {'train': args.train_batch_size, 'valid': args.eval_batch_size}
+    data_loader = data.Corpus(data_path, batch_size, args.max_sql)
+    vocab_size = len(data_loader.vocabulary)
+    print(f"Vocabulary size: {vocab_size}")
+    
+    # ========== 定义实验配置 ==========
+    
+    # 1. Scaling Laws 实验：不同规模的 Baseline 模型
+    scaling_configs = [
+        # 小模型
+        {'name': 'tiny', 'num_layers': 4, 'num_heads': 4, 'emb_dim': 128},
+        {'name': 'small', 'num_layers': 6, 'num_heads': 6, 'emb_dim': 192},
+        {'name': 'base_small', 'num_layers': 6, 'num_heads': 8, 'emb_dim': 256},
+        # 中模型
+        {'name': 'medium', 'num_layers': 8, 'num_heads': 12, 'emb_dim': 384},
+        {'name': 'base', 'num_layers': 8, 'num_heads': 16, 'emb_dim': 512},
+        # 大模型
+        {'name': 'large', 'num_layers': 10, 'num_heads': 20, 'emb_dim': 640},
+        {'name': 'xlarge', 'num_layers': 12, 'num_heads': 24, 'emb_dim': 768},
+    ]
+    
+    # 添加通用训练参数
+    common_params = {
+        'epochs': 15,
+        'lr': 3e-4,
+        'weight_decay': 0.01,
+        'dropout': 0.1,
+        'label_smoothing': 0.1,
+        'grad_clip': 0.5,
+        'patience': 5
+    }
+    
+    for cfg in scaling_configs:
+        cfg.update(common_params)
+    
+    # 2. 架构变体实验
+    # 选择 3 个规模进行对比
+    variant_sizes = [
+        {'num_layers': 4, 'num_heads': 4, 'emb_dim': 128},   # tiny
+        {'num_layers': 6, 'num_heads': 8, 'emb_dim': 256},   # small
+        {'num_layers': 8, 'num_heads': 12, 'emb_dim': 384},  # medium
+    ]
+    
+    variant_configs = []
+    for size in variant_sizes:
+        # Baseline (already in scaling_configs, skip)
+        # QK Norm
+        cfg_qk = size.copy()
+        cfg_qk.update({
+            'name': f"qk_norm_{size['emb_dim']}",
+            'use_qk_norm': True,
+            **common_params
+        })
+        variant_configs.append(cfg_qk)
+        
+        # Attention Gate
+        cfg_gate = size.copy()
+        cfg_gate.update({
+            'name': f"attn_gate_{size['emb_dim']}",
+            'use_attn_gate': True,
+            **common_params
+        })
+        variant_configs.append(cfg_gate)
+        
+        # Value Embedding
+        cfg_ve = size.copy()
+        cfg_ve.update({
+            'name': f"value_embed_{size['emb_dim']}",
+            'use_value_embed': True,
+            **common_params
+        })
+        variant_configs.append(cfg_ve)
+    
+    # 合并所有配置
+    all_configs = scaling_configs + variant_configs
+    
+    print("\n" + "="*70)
+    print("PART B EXPERIMENT CONFIGURATIONS")
+    print("="*70)
+    print(f"Total experiments: {len(all_configs)}")
+    for cfg in all_configs:
+        print(f"  - {cfg['name']}: layers={cfg['num_layers']}, heads={cfg['num_heads']}, "
+              f"dim={cfg['emb_dim']}")
+    
+    # ========== 运行实验 ==========
+    results = []
+    
+    if not args.skip_training:
+        for cfg in all_configs:
+            result = train_single_config(cfg, data_loader, device, args.save_dir)
+            results.append(result)
+            
+            # 保存中间结果
+            save_all_results(results, args.save_dir)
+    else:
+        # 从已有结果加载
+        csv_path = os.path.join(args.save_dir, 'partb_all_results.csv')
+        if os.path.exists(csv_path):
+            print(f"Loading existing results from {csv_path}")
+            import pandas as pd
+            df = pd.read_csv(csv_path)
+            for _, row in df.iterrows():
+                results.append({
+                    'name': row['Config Name'],
+                    'num_layers': int(row['Layers']),
+                    'num_heads': int(row['Heads']),
+                    'emb_dim': int(row['Dim']),
+                    'non_embed_params': int(row['Non-Embed Params']),
+                    'best_valid_ppl': float(row['Best Valid PPL']),
+                    'config': {
+                        'use_qk_norm': row['QK Norm'] == 'True',
+                        'use_attn_gate': row['Attn Gate'] == 'True',
+                        'use_value_embed': row['Value Embed'] == 'True'
+                    }
+                })
+    
+    # ========== 绘图 ==========
+    if results:
+        plot_scaling_laws(results, args.save_dir)
+        save_all_results(results, args.save_dir)
+    
+    # ========== 位置分析（使用最佳模型）==========
+    if os.path.exists(args.best_model_path):
+        pos_results = run_positional_analysis(args.best_model_path, data_loader, 
+                                               device, args.save_dir)
+    else:
+        print(f"Best model not found at {args.best_model_path}, skipping positional analysis")
+    
+    print("\n" + "="*70)
+    print("PART B COMPLETED")
+    print(f"Results saved to {args.save_dir}")
+    print("="*70)
 
-# 保存最终结果和绘图
-save_results()
-plot_curves()
-print_training_summary()
 
-# 保存 CSV 格式以便查看
-import csv
-csv_path = os.path.join(args.save_dir, 'training_results.csv')
-with open(csv_path, 'w', newline='') as csvfile:
-    writer = csv.writer(csvfile)
-    writer.writerow(['Epoch', 'Train Loss', 'Valid Loss', 'Train PPL', 'Valid PPL'])
-    for i in range(len(train_losses)):
-        writer.writerow([i+1, train_losses[i], valid_losses[i], train_ppls[i], valid_ppls[i]])
-print("CSV results saved to {}".format(csv_path))
-
-print("\n=== Training Complete ===")
-print("Best validation perplexity: {:.2f}".format(best_valid_ppl))
-print("Training curves saved to {}/training_curves.png".format(args.plot_dir))
+if __name__ == '__main__':
+    main()
