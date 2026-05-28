@@ -1,0 +1,99 @@
+{
+  "baseline": {
+    "tiny": {
+      "params": 3622928,
+      "best_ppl": 231.17,
+      "final_train": 115.68,
+      "final_valid": 236.56
+    },
+    "small": {
+      "params": 7398544,
+      "best_ppl": 230.83,
+      "final_train": 94.83,
+      "final_valid": 247.86
+    },
+    "base_small": {
+      "params": 11434256,
+      "best_ppl": 233.67,
+      "final_train": 85.66,
+      "final_valid": 254.21
+    },
+    "medium": {
+      "params": 26589712,
+      "best_ppl": 230.66,
+      "final_train": 71.66,
+      "final_valid": 259.12
+    },
+    "base": {
+      "params": 43838224,
+      "best_ppl": 231.4,
+      "final_train": 47.81,
+      "final_valid": 298.71
+    },
+    "large": {
+      "params": 78398480,
+      "best_ppl": 239.46,
+      "final_train": 46.91,
+      "final_valid": 303.44
+    },
+    "xlarge": {
+      "params": 128691472,
+      "best_ppl": 243.9,
+      "final_train": 46.64,
+      "final_valid": 312.8
+    }
+  },
+  "variants": {
+    "QK Norm": {
+      "sizes": [
+        128,
+        256,
+        384
+      ],
+      "params": [
+        3623440,
+        11435024,
+        26590736
+      ],
+      "ppls": [
+        263.37,
+        257.51,
+        255.12
+      ]
+    },
+    "Attention Gate": {
+      "sizes": [
+        128,
+        256,
+        384
+      ],
+      "params": [
+        3622944,
+        11434304,
+        26589808
+      ],
+      "ppls": [
+        234.02,
+        226.31,
+        230.97
+      ]
+    },
+    "Value Embedding": {
+      "sizes": [
+        128,
+        256,
+        384
+      ],
+      "params": [
+        4902928,
+        13994256,
+        30429712
+      ],
+      "ppls": [
+        240.7,
+        228.35,
+        230.85
+      ]
+    }
+  }
+}
