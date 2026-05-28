@@ -1,314 +1,140 @@
 # coding: utf-8
 """
-Part B 最终绘图脚本 - 基于完整实验结果
+Part A: 绘制 Medium 模型的训练曲线
 """
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
-import json
 
-# ========== 数据定义 ==========
-# Baseline 数据
-baseline_data = {
-    'tiny': {'params': 3622928, 'ppl': 231.17},
-    'small': {'params': 7398544, 'ppl': 230.83},
-    'base_small': {'params': 11434256, 'ppl': 233.67},
-    'medium': {'params': 26589712, 'ppl': 230.66},
-    'base': {'params': 43838224, 'ppl': 231.40},
-    'large': {'params': 78398480, 'ppl': 239.46},
-    'xlarge': {'params': 128691472, 'ppl': 243.90},
-}
+# Medium 模型的实验数据
+train_losses = [6.632, 5.925, 5.621, 5.396, 5.210, 5.047, 4.898, 4.754, 4.616, 4.482, 4.353, 4.229]
+valid_losses = [6.109, 5.807, 5.647, 5.562, 5.498, 5.488, 5.468, 5.468, 5.488, 5.505, 5.547, 5.582]
+train_ppls = [759.04, 374.13, 276.20, 220.55, 183.06, 155.63, 134.02, 116.10, 101.12, 88.39, 77.71, 68.63]
+valid_ppls = [450.02, 332.67, 283.53, 260.30, 244.13, 241.77, 236.89, 236.90, 241.84, 245.95, 256.38, 265.57]
 
-# 架构变体数据 - 修正结构
-variants_data = {
-    'QK Norm': {
-        'sizes': [128, 256, 384],
-        'params': [3623440, 11435024, 26590736],
-        'ppls': [263.37, 257.51, 255.12],
-        'color': 'green',
-        'marker': 's'
-    },
-    'Attention Gate': {
-        'sizes': [128, 256, 384],
-        'params': [3622944, 11434304, 26589808],
-        'ppls': [234.02, 226.31, 230.97],
-        'color': 'red',
-        'marker': '^'
-    },
-    'Value Embedding': {
-        'sizes': [128, 256, 384],
-        'params': [4902928, 13994256, 30429712],
-        'ppls': [240.70, 228.35, 230.85],
-        'color': 'purple',
-        'marker': 'd'
-    },
-}
+epochs = range(1, len(train_losses) + 1)
+best_epoch = 7
+best_ppl = 236.89
 
-# Baseline 最终训练/验证困惑度（用于过拟合分析）
-baseline_final = {
-    'tiny': {'train': 115.68, 'valid': 236.56},
-    'small': {'train': 94.83, 'valid': 247.86},
-    'base_small': {'train': 85.66, 'valid': 254.21},
-    'medium': {'train': 71.66, 'valid': 259.12},
-    'base': {'train': 47.81, 'valid': 298.71},
-    'large': {'train': 46.91, 'valid': 303.44},
-    'xlarge': {'train': 46.64, 'valid': 312.80},
-}
-
-def plot_scaling_law():
-    """图1: Scaling Law - 参数量 vs 困惑度"""
-    fig, ax = plt.subplots(figsize=(8, 6))
+def plot_loss_curves():
+    """图1: 损失曲线"""
+    fig, ax = plt.subplots(figsize=(10, 6))
     
-    # 按参数量排序
-    names = list(baseline_data.keys())
-    params = [baseline_data[n]['params'] for n in names]
-    ppls = [baseline_data[n]['ppl'] for n in names]
-    sorted_idx = np.argsort(params)
-    params = np.array(params)[sorted_idx]
-    ppls = np.array(ppls)[sorted_idx]
-    names_sorted = np.array(names)[sorted_idx]
+    ax.plot(epochs, train_losses, 'b-o', linewidth=2, markersize=8, label='Training Loss')
+    ax.plot(epochs, valid_losses, 'r-s', linewidth=2, markersize=8, label='Validation Loss')
     
-    # 绘制 Baseline 点
-    ax.loglog(params, ppls, 'bo-', linewidth=2, markersize=10, label='Baseline')
+    # 标记最佳点
+    ax.plot(best_epoch, valid_losses[best_epoch-1], 'g*', markersize=15, 
+            label=f'Best: {valid_losses[best_epoch-1]:.3f}')
     
-    # 线性拟合 (log-log)
-    log_params = np.log10(params)
-    log_ppls = np.log10(ppls)
-    coeffs = np.polyfit(log_params, log_ppls, 1)
-    poly = np.poly1d(coeffs)
-    
-    params_fit = np.logspace(np.log10(params.min()), np.log10(params.max()), 100)
-    ppls_fit = 10 ** poly(np.log10(params_fit))
-    ax.loglog(params_fit, ppls_fit, 'r--', linewidth=2, 
-              label=f'Power-law fit: slope = {coeffs[0]:.3f}')
-    
-    # 标注数据点
-    for name, p, ppl in zip(names_sorted, params, ppls):
-        ax.annotate(name, (p, ppl), xytext=(5, 5), textcoords='offset points', fontsize=9)
-    
-    ax.set_xlabel('Non-Embedding Parameters', fontsize=12)
-    ax.set_ylabel('Validation Perplexity', fontsize=12)
-    ax.set_title('Scaling Law: Performance vs Model Size', fontsize=14)
+    ax.set_xlabel('Epoch', fontsize=12)
+    ax.set_ylabel('Cross-Entropy Loss', fontsize=12)
+    ax.set_title('Training and Validation Loss Curves (Medium Model)', fontsize=14)
+    ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3, linestyle='--')
-    ax.legend(fontsize=10)
     
     plt.tight_layout()
-    plt.savefig('scaling_law.png', dpi=150, bbox_inches='tight')
+    plt.savefig('parta_loss_curves.png', dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"Saved: scaling_law.png (slope = {coeffs[0]:.3f})")
-    return coeffs
+    print("Saved: parta_loss_curves.png")
 
-def plot_variants_comparison():
-    """图2: 架构变体对比"""
+def plot_ppl_curves():
+    """图2: 困惑度曲线"""
     fig, ax = plt.subplots(figsize=(10, 6))
     
-    # Baseline
-    params_b = [baseline_data[n]['params'] for n in baseline_data]
-    ppls_b = [baseline_data[n]['ppl'] for n in baseline_data]
-    sorted_idx = np.argsort(params_b)
-    params_b = np.array(params_b)[sorted_idx]
-    ppls_b = np.array(ppls_b)[sorted_idx]
-    ax.loglog(params_b, ppls_b, 'ko-', linewidth=2, markersize=8, 
-              label='Baseline', zorder=10)
+    ax.semilogy(epochs, train_ppls, 'b-o', linewidth=2, markersize=8, label='Training PPL')
+    ax.semilogy(epochs, valid_ppls, 'r-s', linewidth=2, markersize=8, label='Validation PPL')
     
-    # 变体数据
-    for name, data in variants_data.items():
-        params_v = data['params']
-        ppls_v = data['ppls']
-        sizes = data['sizes']
-        
-        ax.loglog(params_v, ppls_v, 
-                 marker=data['marker'], color=data['color'],
-                 linestyle='--', linewidth=1.5, markersize=9,
-                 label=name, zorder=5)
-        
-        # 标注每个点对应的维度
-        for p, ppl, s in zip(params_v, ppls_v, sizes):
-            ax.annotate(f'{s}d', (p, ppl), xytext=(5, -8), 
-                       textcoords='offset points', fontsize=8, color=data['color'])
-        
-        # 标注最佳点
-        best_idx = np.argmin(ppls_v)
-        ax.annotate(f'best: {ppls_v[best_idx]:.1f}', 
-                   (params_v[best_idx], ppls_v[best_idx]),
-                   xytext=(5, 10), textcoords='offset points', 
-                   fontsize=8, color=data['color'], weight='bold')
+    # 标记最佳点
+    ax.plot(best_epoch, best_ppl, 'g*', markersize=15, 
+            label=f'Best Valid PPL = {best_ppl:.2f}')
     
-    ax.set_xlabel('Non-Embedding Parameters', fontsize=12)
-    ax.set_ylabel('Validation Perplexity', fontsize=12)
-    ax.set_title('Architectural Variants Comparison', fontsize=14)
+    ax.set_xlabel('Epoch', fontsize=12)
+    ax.set_ylabel('Perplexity (log scale)', fontsize=12)
+    ax.set_title('Training and Validation Perplexity Curves (Medium Model)', fontsize=14)
+    ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3, linestyle='--')
-    ax.legend(fontsize=10, loc='upper right')
     
     plt.tight_layout()
-    plt.savefig('variants_comparison.png', dpi=150, bbox_inches='tight')
+    plt.savefig('parta_ppl_curves.png', dpi=150, bbox_inches='tight')
     plt.close()
-    print("Saved: variants_comparison.png")
+    print("Saved: parta_ppl_curves.png")
 
-def plot_overfitting_analysis():
-    """图3: 过拟合分析 - 训练 vs 验证困惑度"""
-    models = list(baseline_final.keys())
-    train_ppls = [baseline_final[m]['train'] for m in models]
-    valid_ppls = [baseline_final[m]['valid'] for m in models]
-    params = [baseline_data[m]['params'] for m in models]
+def plot_combined():
+    """图3: 组合图（2x2子图）"""
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     
-    fig, ax = plt.subplots(figsize=(10, 6))
+    # 损失曲线
+    axes[0, 0].plot(epochs, train_losses, 'b-o', linewidth=2, markersize=6, label='Training')
+    axes[0, 0].plot(epochs, valid_losses, 'r-s', linewidth=2, markersize=6, label='Validation')
+    axes[0, 0].plot(best_epoch, valid_losses[best_epoch-1], 'g*', markersize=15)
+    axes[0, 0].set_xlabel('Epoch')
+    axes[0, 0].set_ylabel('Loss')
+    axes[0, 0].set_title('Loss Curves')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True, alpha=0.3)
     
-    x = np.arange(len(models))
-    width = 0.35
+    # 困惑度曲线
+    axes[0, 1].semilogy(epochs, train_ppls, 'b-o', linewidth=2, markersize=6, label='Training')
+    axes[0, 1].semilogy(epochs, valid_ppls, 'r-s', linewidth=2, markersize=6, label='Validation')
+    axes[0, 1].plot(best_epoch, best_ppl, 'g*', markersize=15)
+    axes[0, 1].set_xlabel('Epoch')
+    axes[0, 1].set_ylabel('Perplexity (log scale)')
+    axes[0, 1].set_title('Perplexity Curves')
+    axes[0, 1].legend()
+    axes[0, 1].grid(True, alpha=0.3)
     
-    bars1 = ax.bar(x - width/2, train_ppls, width, label='Final Train PPL', color='steelblue')
-    bars2 = ax.bar(x + width/2, valid_ppls, width, label='Final Valid PPL', color='coral')
+    # 损失下降率
+    train_reduction = [(train_losses[0] - l) / train_losses[0] * 100 for l in train_losses]
+    valid_reduction = [(valid_losses[0] - l) / valid_losses[0] * 100 for l in valid_losses]
+    axes[1, 0].plot(epochs, train_reduction, 'b-o', label='Training')
+    axes[1, 0].plot(epochs, valid_reduction, 'r-s', label='Validation')
+    axes[1, 0].set_xlabel('Epoch')
+    axes[1, 0].set_ylabel('Loss Reduction (%)')
+    axes[1, 0].set_title('Loss Reduction Over Time')
+    axes[1, 0].legend()
+    axes[1, 0].grid(True, alpha=0.3)
     
-    # 添加过拟合比率标签
-    for i, (train, valid) in enumerate(zip(train_ppls, valid_ppls)):
-        ratio = valid / train
-        ax.text(i, valid + 10, f'{ratio:.1f}x', ha='center', fontsize=9, color='red')
-    
-    # 添加参数量标签
-    for i, p in enumerate(params):
-        ax.text(i, -30, f'{p//1000000:.0f}M', ha='center', fontsize=8, color='gray')
-    
-    ax.set_xlabel('Model Size', fontsize=12)
-    ax.set_ylabel('Perplexity', fontsize=12)
-    ax.set_title('Overfitting Analysis: Train vs Validation Perplexity', fontsize=14)
-    ax.set_xticks(x)
-    ax.set_xticklabels(models, rotation=45)
-    ax.legend(fontsize=10)
-    ax.grid(True, alpha=0.3, axis='y')
-    
-    # 添加 y 轴范围
-    ax.set_ylim(0, 350)
+    # 过拟合分析
+    ratio = [v / t for v, t in zip(valid_ppls, train_ppls)]
+    axes[1, 1].bar(epochs, ratio, color='steelblue', alpha=0.7)
+    axes[1, 1].axhline(y=1, color='r', linestyle='--', label='No Overfitting (ratio=1)')
+    axes[1, 1].set_xlabel('Epoch')
+    axes[1, 1].set_ylabel('Valid PPL / Train PPL')
+    axes[1, 1].set_title('Overfitting Analysis')
+    axes[1, 1].legend()
+    axes[1, 1].grid(True, alpha=0.3, axis='y')
     
     plt.tight_layout()
-    plt.savefig('overfitting_analysis.png', dpi=150, bbox_inches='tight')
+    plt.savefig('parta_combined.png', dpi=150, bbox_inches='tight')
     plt.close()
-    print("Saved: overfitting_analysis.png")
+    print("Saved: parta_combined.png")
 
-def plot_combined_comparison():
-    """图4: 组合对比图 - 各规模下变体性能"""
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    sizes = [128, 256, 384]
-    x = np.arange(len(sizes))
-    width = 0.25
-    
-    # Baseline 在对应规模的值
-    baseline_at_size = {
-        128: baseline_data['tiny']['ppl'],
-        256: baseline_data['base_small']['ppl'],
-        384: baseline_data['medium']['ppl'],
-    }
-    
-    colors = {'QK Norm': 'green', 'Attention Gate': 'red', 'Value Embedding': 'purple'}
-    markers = {'QK Norm': 's', 'Attention Gate': '^', 'Value Embedding': 'd'}
-    
-    # 绘制 Baseline 线
-    ax.axhline(y=baseline_at_size[128], xmin=0, xmax=0.25, color='blue', linestyle='-', linewidth=2, label='Baseline')
-    ax.axhline(y=baseline_at_size[256], xmin=0.35, xmax=0.65, color='blue', linewidth=2)
-    ax.axhline(y=baseline_at_size[384], xmin=0.7, xmax=1.0, color='blue', linewidth=2)
-    
-    # 添加 Baseline 标注
-    ax.text(-0.1, baseline_at_size[128] + 2, f'231.2', ha='center', fontsize=8, color='blue')
-    ax.text(0.9, baseline_at_size[256] + 2, f'233.7', ha='center', fontsize=8, color='blue')
-    ax.text(1.9, baseline_at_size[384] + 2, f'230.7', ha='center', fontsize=8, color='blue')
-    
-    # 绘制各变体
-    for i, (name, data) in enumerate(variants_data.items()):
-        offset = (i - 1) * width
-        ppls_at_size = data['ppls']
-        ax.bar(x + offset, ppls_at_size, width, label=name, 
-               color=colors[name], alpha=0.7, edgecolor='black')
-    
-    ax.set_xlabel('Embedding Dimension', fontsize=12)
-    ax.set_ylabel('Validation Perplexity', fontsize=12)
-    ax.set_title('Architectural Variants Performance by Model Size', fontsize=14)
-    ax.set_xticks(x)
-    ax.set_xticklabels(['128 (tiny)', '256 (base_small)', '384 (medium)'])
-    ax.legend(fontsize=10)
-    ax.grid(True, alpha=0.3, axis='y')
-    
-    plt.tight_layout()
-    plt.savefig('combined_comparison.png', dpi=150, bbox_inches='tight')
-    plt.close()
-    print("Saved: combined_comparison.png")
-
-def create_summary_table():
-    """生成结果汇总表"""
-    print("\n" + "="*80)
-    print("PART B - COMPLETE RESULTS SUMMARY")
-    print("="*80)
-    
-    print("\n--- Baseline Models ---")
-    print(f"{'Model':<12} {'Params':<15} {'Best PPL':<12} {'Final Train PPL':<15} {'Final Valid PPL':<15} {'Ratio':<10}")
-    print("-"*75)
-    for name in baseline_data.keys():
-        data = baseline_data[name]
-        final = baseline_final[name]
-        ratio = final['valid'] / final['train']
-        print(f"{name:<12} {data['params']:<15,} {data['ppl']:<12.2f} {final['train']:<15.2f} {final['valid']:<15.2f} {ratio:<10.1f}x")
-    
-    print("\n--- Architectural Variants (Best Performance) ---")
-    print(f"{'Variant':<18} {'128-dim (tiny)':<18} {'256-dim (base_small)':<18} {'384-dim (medium)':<18}")
-    print("-"*72)
-    for name, data in variants_data.items():
-        ppl_128 = data['ppls'][0]
-        ppl_256 = data['ppls'][1]
-        ppl_384 = data['ppls'][2]
-        print(f"{name:<18} {ppl_128:<18.2f} {ppl_256:<18.2f} {ppl_384:<18.2f}")
-    
-    # 最佳改进
-    print("\n--- Best Improvements vs Baseline ---")
-    baseline_256 = baseline_data['base_small']['ppl']
-    best_gate = variants_data['Attention Gate']['ppls'][1]
-    best_ve = variants_data['Value Embedding']['ppls'][1]
-    print(f"Attention Gate (256-dim): {best_gate:.2f} (improved by {baseline_256 - best_gate:.2f})")
-    print(f"Value Embedding (256-dim): {best_ve:.2f} (improved by {baseline_256 - best_ve:.2f})")
-    
-    print("\n--- Key Findings ---")
-    print(f"1. Best baseline model: medium (26.6M params) with PPL = 230.66")
-    print(f"2. Best architectural variant: Attention Gate (256-dim) with PPL = 226.31")
-    print(f"3. QK Norm consistently underperforms baseline across all scales")
-    print(f"4. Overfitting worsens with model size: xlarge has {baseline_final['xlarge']['valid'] / baseline_final['xlarge']['train']:.1f}x gap")
-
-def save_results():
-    """保存结果到 JSON"""
-    results = {
-        'baseline': {k: {'params': v['params'], 'best_ppl': v['ppl'], 
-                        'final_train': baseline_final[k]['train'],
-                        'final_valid': baseline_final[k]['valid']} 
-                    for k, v in baseline_data.items()},
-        'variants': {
-            name: {
-                'sizes': data['sizes'],
-                'params': data['params'],
-                'ppls': data['ppls']
-            } for name, data in variants_data.items()
-        }
-    }
-    with open('partb_results_complete.json', 'w') as f:
-        json.dump(results, f, indent=2)
-    print("\nSaved: partb_results_complete.json")
+def print_summary():
+    """打印训练总结"""
+    print("\n" + "="*60)
+    print("PART A - MEDIUM MODEL TRAINING SUMMARY")
+    print("="*60)
+    print(f"Model: 8 layers, 12 heads, 384 dim")
+    print(f"Total parameters: 26,589,712 (26.6M)")
+    print(f"Best validation perplexity: {best_ppl:.2f} (Epoch {best_epoch})")
+    print(f"Final training perplexity: {train_ppls[-1]:.2f}")
+    print(f"Final validation perplexity: {valid_ppls[-1]:.2f}")
+    print(f"Overfitting ratio: {valid_ppls[-1] / train_ppls[-1]:.2f}x")
+    print("="*60)
 
 def main():
-    print("Generating Part B plots with complete data...")
+    print("Generating Part A plots for Medium model...")
+    plot_loss_curves()
+    plot_ppl_curves()
+    plot_combined()
+    print_summary()
     
-    plot_scaling_law()
-    plot_variants_comparison()
-    plot_overfitting_analysis()
-    plot_combined_comparison()
-    create_summary_table()
-    save_results()
-    
-    print("\n" + "="*50)
-    print("Generated files:")
-    print("  - scaling_law.png")
-    print("  - variants_comparison.png")
-    print("  - overfitting_analysis.png")
-    print("  - combined_comparison.png")
-    print("  - partb_results_complete.json")
-    print("="*50)
+    print("\nGenerated files:")
+    print("  - parta_loss_curves.png")
+    print("  - parta_ppl_curves.png")
+    print("  - parta_combined.png")
 
 if __name__ == '__main__':
     main()
